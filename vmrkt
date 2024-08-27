@@ -1,0 +1,194 @@
+#! /usr/bin/env python
+import os
+import re
+import subprocess
+
+import click
+from pydantic import BaseModel
+
+from vmrkt import (
+    SSHConnection,
+    create_rkt,
+    destroy_rkt,
+    restart_instance,
+    rkt_info,
+    run_commands,
+    start_instance,
+    stop_instance,
+)
+
+
+class Payload(BaseModel):
+    host: str
+    ami_id: str
+    instance_type: str
+    ingress: list[int]
+    egress: list[int]
+    disk_size: int
+
+
+def list_hosts() -> list[str]:
+    hosts = []
+    for file in os.listdir("keys"):
+        if file.endswith(".pem"):
+            hosts.append(file.removesuffix(".pem"))
+    return hosts
+
+
+def find_host(host_query: str) -> str:  # type: ignore (too dumb to see Abort raises)
+    for host in list_hosts():
+        if host_query in host or re.match(host_query, host):
+            return host
+    click.Abort(f"Host matching '{host_query}' not found.")
+
+
+@click.group()
+def cli():
+    pass
+
+
+@cli.command()
+@click.argument("host")
+@click.option(
+    "--ami", default="ami-04a81a99f5ec58529", help="Ubuntu version for the instance."
+)
+@click.option("--instance-type", default="t2.micro", help="EC2 instance type.")
+@click.option("--disk-size", default=200, help="Disk size in GB.")
+@click.option(
+    "--ingress", default=["22"], multiple=True, help="Inbound ports to allow."
+)
+@click.option(
+    "--egress",
+    default=["-1"],
+    multiple=True,
+    help="Outbound ports to allow (-1 for all).",
+)
+@click.option(
+    "--payload", default=None, help="Path to payload for creating the instance."
+)
+def launch(
+    host: str,
+    ami: str,
+    instance_type: str,
+    disk_size: int,
+    ingress: list[str],
+    egress: list[str],
+    payload: str,
+):
+    """Launch a new VM with the given name."""
+    if payload:
+        with open(payload, "r") as f:
+            payload_model = Payload.model_validate_json(f.read())
+        host = payload_model.host
+        instance_type = payload_model.instance_type
+        disk_size = payload_model.disk_size
+        ami = payload_model.ami_id
+        ingress_combined = payload_model.ingress
+        ingress_combined = payload_model.egress
+    else:
+        # Handle commas for multiple values
+        ingress_combined = []
+        for value in ingress:
+            ingress_combined.extend([int(v) for v in value.split(",")])
+        egress_combined = []
+        for value in egress:
+            egress_combined.extend([int(v) for v in value.split(",")])
+
+    if os.path.exists(f"keys/{host}.pem"):
+        if not click.confirm(f"VM '{host}' already exists. Destroy it first?"):
+            click.echo(
+                "You need to terminate the instance along with all corresponding configurations before relaunching.",
+            )
+            return
+        destroy_rkt(host)
+    create_rkt(host, instance_type, disk_size, ami, ingress_combined, egress_combined)
+    click.echo(f"{host} launched successfully.")
+
+
+@cli.command()
+@click.argument("host_query")
+def destroy(host_query: str):
+    """Destroy the VM with the given name."""
+    destroy_rkt(find_host(host_query))
+    click.echo(f"VM '{host_query}' destroyed successfully.")
+
+
+@cli.command()
+@click.argument("host_query")
+def start(host_query: str):
+    """Start the VM with the given name."""
+    start_instance(find_host(host_query))
+    click.echo(f"VM '{host_query}' started successfully.")
+
+
+@cli.command()
+@click.argument("host_query")
+def stop(host_query: str):
+    """Stop the VM with the given name."""
+    stop_instance(find_host(host_query))
+    click.echo(f"VM '{host_query}' stopped successfully.")
+
+
+@cli.command()
+@click.argument("host_query")
+def restart(host_query: str):
+    """Restart the VM with the given name."""
+    restart_instance(find_host(host_query))
+    click.echo(f"VM '{host_query}' restarted successfully.")
+
+
+@cli.command()
+@click.argument("host_query")
+def info(host_query: str):
+    """Get information about the VM with the given name."""
+    host = rkt_info(host_query)
+    click.echo(f"Information for VM '{host}':")
+    click.echo(info)
+
+
+@cli.command("list")
+def print_hosts():
+    hosts = list_hosts()
+    if not hosts:
+        click.echo("No hosts found.")
+        return
+    for host in hosts:
+        click.echo(host)
+
+
+@cli.command()
+@click.argument("host_query")
+def ssh(host_query: str):
+    """SSH into the VM with the given name."""
+    host = find_host(host_query)
+    click.echo(f"Connecting to {host}...")
+    subprocess.run(["ssh", "-i", f"keys/{host}.pem", f"ubuntu@{host}"])
+
+
+@cli.command()
+@click.argument("host_query")
+@click.argument("file")
+def upload(host_query: str, file: str):
+    """Upload a file to the VM to the specified host."""
+    host = find_host(host_query)
+    click.echo(f"Uploading file to {host}...")
+    subprocess.run(["scp", "-i", f"keys/{host}.pem", file, f"ubuntu@{host}:~"])
+
+
+@cli.command()
+@click.argument("host_query")
+@click.argument("command")
+@click.option("--file", is_flag=True, help="Execute commands from file.")
+def run(host_query: str, command: str, file: bool = False):
+    """Run a command on all hosts."""
+    host = find_host(host_query)
+    click.echo(f"Running command on {host}...")
+    if file:
+        with open(command, "r") as f:
+            run_commands(host, f.read())
+    else:
+        run_commands(host, command)
+
+
+if __name__ == "__main__":
+    cli()

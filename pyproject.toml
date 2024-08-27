@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "ec2rkt"
+version = "1.0.0"
+description = "Launch one-off EC2 instances 🚀"
+authors = ["Faraz Yashar <faraz.yashar@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+boto3 = "^1.35.0"
+click = "^8.1.7"
+pydantic = "^2.8.2"
+paramiko = "^3.4.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
